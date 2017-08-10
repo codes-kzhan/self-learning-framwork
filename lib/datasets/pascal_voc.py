@@ -200,7 +200,9 @@ class pascal_voc(imdb):
         overlaps = np.zeros((num_objs, self.num_classes), dtype=np.float32)
         # "Seg" area for pascal is just the box area
         seg_areas = np.zeros((num_objs), dtype=np.float32)
-
+        size=tree.find('size')
+        height=float(size.find('height').text)
+        width=float(size.find('width').text)
         # Load object bounding boxes into a data frame.
         for ix, obj in enumerate(objs):
             bbox = obj.find('bndbox')
@@ -209,6 +211,15 @@ class pascal_voc(imdb):
             y1 = float(bbox.find('ymin').text) - 1
             x2 = float(bbox.find('xmax').text) - 1
             y2 = float(bbox.find('ymax').text) - 1
+            if x1<0:
+                x1=0
+            if y1<0:
+                y1=0
+            if x2>width-1:
+                x2=width-1
+            if y2>height-1:
+                y2=height-1
+           # print filename
             cls = self._class_to_ind[obj.find('name').text.lower().strip()]
             boxes[ix, :] = [x1, y1, x2, y2]
             gt_classes[ix] = cls
@@ -233,7 +244,7 @@ class pascal_voc(imdb):
         filename = self._get_comp_id() + '_det_' + self._image_set + '_{:s}.txt'
         path = os.path.join(
             self._devkit_path,
-            'results',
+            'res',
             'VOC' + self._year,
             'Main',
             filename)

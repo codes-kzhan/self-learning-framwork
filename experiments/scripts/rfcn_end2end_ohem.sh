@@ -24,10 +24,10 @@ EXTRA_ARGS_SLUG=${EXTRA_ARGS// /_}
 
 case $DATASET in
   pascal_voc)
-    TRAIN_IMDB="voc_2007_trainval+voc_2012_trainval"
+    TRAIN_IMDB="voc_2007_trainval+voc_10_trainval"
     TEST_IMDB="voc_0712_test"
     PT_DIR="pascal_voc"
-    ITERS=110000
+    ITERS=130000
     ;;
   coco)
     # This is a very long and slow training schedule

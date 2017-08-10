@@ -15,7 +15,7 @@ from datasets.imagenet import imagenet
 import numpy as np
 
 # Set up voc_<year>_<split> using selective search "fast" mode
-for year in ['2007', '2012', '0712']:
+for year in ['2007', '2012', 'coco','10','08','17','2017', '00']:
     for split in ['train', 'val', 'trainval', 'test']:
         name = 'voc_{}_{}'.format(year, split)
         __sets[name] = (lambda split=split, year=year: pascal_voc(split, year))

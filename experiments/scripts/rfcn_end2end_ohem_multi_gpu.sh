@@ -24,7 +24,7 @@ EXTRA_ARGS_SLUG=${EXTRA_ARGS// /_}
 
 case $DATASET in
   pascal_voc)
-    TRAIN_IMDB="voc_2007_trainval+voc_2012_trainval"
+    TRAIN_IMDB="voc_2007_trainval+voc_10_trainval"
     TEST_IMDB="voc_0712_test"
     PT_DIR="pascal_voc"
     ITERS=110000
@@ -49,7 +49,7 @@ exec &> >(tee -a "$LOG")
 echo Logging output to "$LOG"
 
 
-time ./tools/train_net_multi_gpu.py --gpu 0,1 \
+time ./tools/train_net_multi_gpu.py --gpu 0,1,2,3 \
   --solver models/${PT_DIR}/${NET}/rfcn_end2end/solver_ohem.prototxt \
   --weights data/imagenet_models/${NET}-model.caffemodel \
   --imdb ${TRAIN_IMDB} \
@@ -62,7 +62,7 @@ set +x
 NET_FINAL=`tail -n 100 ${LOG} | grep -B 1 "done solving" | grep "Wrote snapshot" | awk '{print $4}'`
 set -x
 
-time ./tools/test_net.py --gpu ${GPU_ID} \
+time ./tools/test_net.py --gpu $GPU_ID \
   --def models/${PT_DIR}/${NET}/rfcn_end2end/test_agnostic.prototxt \
   --net ${NET_FINAL} \
   --imdb ${TEST_IMDB} \

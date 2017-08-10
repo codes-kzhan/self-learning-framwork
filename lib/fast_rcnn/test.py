@@ -14,10 +14,12 @@ from utils.timer import Timer
 import numpy as np
 import cv2
 import caffe
+import PIL
 from fast_rcnn.nms_wrapper import nms
 import cPickle
 from utils.blob import im_list_to_blob
 import os
+import roi_data_layer.roidb as rdl_roidb
 
 def _get_image_blob(im):
     """Converts an image into a network input.
@@ -132,56 +134,73 @@ def im_detect(net, im, boxes=None):
         blobs['rois'] = blobs['rois'][index, :]
         boxes = boxes[index, :]
 
-    if cfg.TEST.HAS_RPN:
-        im_blob = blobs['data']
-        blobs['im_info'] = np.array(
-            [[im_blob.shape[2], im_blob.shape[3], im_scales[0]]],
-            dtype=np.float32)
+    estm_boxes = None
+    estm_scores = None
+    for k in xrange( len(im_scales) ): 
+        im_blob = blobs['data'][k]
+        im_blob = im_blob.reshape( ( 1, im_blob.shape[0], im_blob.shape[1], im_blob.shape[2] ) )
+        if cfg.TEST.HAS_RPN:
+            blobs['im_info'] = np.array(
+                [[im_blob.shape[2], im_blob.shape[3], im_scales[k]]],
+                dtype=np.float32)
 
-    # reshape network inputs
-    net.blobs['data'].reshape(*(blobs['data'].shape))
-    if cfg.TEST.HAS_RPN:
-        net.blobs['im_info'].reshape(*(blobs['im_info'].shape))
-    else:
-        net.blobs['rois'].reshape(*(blobs['rois'].shape))
+        # reshape network inputs
+        net.blobs['data'].reshape(*(im_blob.shape))
+        if cfg.TEST.HAS_RPN:
+            net.blobs['im_info'].reshape(*(blobs['im_info'].shape))
+        else:
+            net.blobs['rois'].reshape(*(blobs['rois'].shape))
 
-    # do forward
-    forward_kwargs = {'data': blobs['data'].astype(np.float32, copy=False)}
-    if cfg.TEST.HAS_RPN:
-        forward_kwargs['im_info'] = blobs['im_info'].astype(np.float32, copy=False)
-    else:
-        forward_kwargs['rois'] = blobs['rois'].astype(np.float32, copy=False)
-    blobs_out = net.forward(**forward_kwargs)
+        # do forward
+        forward_kwargs = {'data': im_blob.astype(np.float32, copy=False)}
+        if cfg.TEST.HAS_RPN:
+            forward_kwargs['im_info'] = blobs['im_info'].astype(np.float32, copy=False)
+        else:
+            forward_kwargs['rois'] = blobs['rois'].astype(np.float32, copy=False)
+        blobs_out = net.forward(**forward_kwargs)
 
-    if cfg.TEST.HAS_RPN:
-        assert len(im_scales) == 1, "Only single-image batch implemented"
-        rois = net.blobs['rois'].data.copy()
-        # unscale back to raw image space
-        boxes = rois[:, 1:5] / im_scales[0]
+        if cfg.TEST.HAS_RPN:
+            #assert len(im_scales) == 1, "Only single-image batch implemented"
+            rois = net.blobs['rois'].data.copy()
+            # unscale back to raw image space
+            boxes = rois[:, 1:5] / im_scales[k]
 
-    if cfg.TEST.SVM:
-        # use the raw scores before softmax under the assumption they
-        # were trained as linear SVMs
-        scores = net.blobs['cls_score'].data
-    else:
-        # use softmax estimated probabilities
-        scores = blobs_out['cls_prob']
+        if cfg.TEST.SVM:
+            # use the raw scores before softmax under the assumption they
+            # were trained as linear SVMs
+            scores = net.blobs['cls_score'].data
+        else:
+            # use softmax estimated probabilities
+            scores = blobs_out['cls_prob']
+            if estm_scores is None:
+               estm_scores = scores.copy()
+            else:
+               estm_scores = np.concatenate( (estm_scores, scores.copy()), axis = 0 )
 
-    if cfg.TEST.BBOX_REG:
-        # Apply bounding-box regression deltas
-        box_deltas = blobs_out['bbox_pred']
-        pred_boxes = bbox_transform_inv(boxes, box_deltas)
-        pred_boxes = clip_boxes(pred_boxes, im.shape)
-    else:
-        # Simply repeat the boxes, once for each class
-        pred_boxes = np.tile(boxes, (1, scores.shape[1]))
+        if cfg.TEST.BBOX_REG:
+            # Apply bounding-box regression deltas
+            box_deltas = blobs_out['bbox_pred']
+            pred_boxes = bbox_transform_inv(boxes, box_deltas)
+            pred_boxes = clip_boxes(pred_boxes, im.shape)
+            if estm_boxes is None:
+               estm_boxes = pred_boxes.copy()
+            else:
+               estm_boxes = np.concatenate( (estm_boxes, pred_boxes.copy()), axis = 0 )
+        else:
+            # Simply repeat the boxes, once for each class
+            pred_boxes = np.tile(boxes, (1, scores.shape[1]))
+            if estm_boxes is None:
+               estm_boxes = pred_boxes.copy()
+            else:
+               estm_boxes = np.concatenate( (estm_boxes, pred_boxes.copy()), axis = 0 )
 
-    if cfg.DEDUP_BOXES > 0 and not cfg.TEST.HAS_RPN:
-        # Map scores and predictions back to the original set of boxes
-        scores = scores[inv_index, :]
-        pred_boxes = pred_boxes[inv_index, :]
+        if cfg.DEDUP_BOXES > 0 and not cfg.TEST.HAS_RPN:
+            # Map scores and predictions back to the original set of boxes
+            #scores = scores[inv_index, :]
+            #pred_boxes = pred_boxes[inv_index, :]
+            raise 'Not Implemented!'
 
-    return scores, pred_boxes
+    return estm_scores, estm_boxes
 
 def vis_detections(im, class_name, dets, thresh=0.3):
     """Visual debugging of detections."""
@@ -199,7 +218,7 @@ def vis_detections(im, class_name, dets, thresh=0.3):
                               bbox[3] - bbox[1], fill=False,
                               edgecolor='g', linewidth=3)
                 )
-            plt.title('{}  {:.3f}'.format(class_name, score))
+            plt.title('{} {:.2f} {:.2f} {:.2f} {:.2f}'.format(class_name, bbox[0],bbox[1],bbox[2],bbox[3]))
             plt.show()
 
 def apply_nms(all_boxes, thresh):
@@ -223,6 +242,18 @@ def apply_nms(all_boxes, thresh):
                 continue
             nms_boxes[cls_ind][im_ind] = dets[keep, :].copy()
     return nms_boxes
+def get_testing_roidb(imdb):
+    """Returns a roidb (Region of Interest database) for use in training."""
+    if cfg.TRAIN.USE_FLIPPED:
+        print 'Appending horizontally-flipped testing examples...'
+        imdb.append_flipped_images()
+        print 'done'
+
+    # print 'Preparing testing data...'
+    # rdl_roidb.prepare_roidb(imdb)
+    # print 'done'
+
+    return imdb
 
 def test_net(net, imdb, max_per_image=400, thresh=-np.inf, vis=False):
     """Test a Fast R-CNN network on an image database."""
@@ -230,6 +261,7 @@ def test_net(net, imdb, max_per_image=400, thresh=-np.inf, vis=False):
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
+
     all_boxes = [[[] for _ in xrange(num_images)]
                  for _ in xrange(imdb.num_classes)]
 
@@ -238,8 +270,12 @@ def test_net(net, imdb, max_per_image=400, thresh=-np.inf, vis=False):
     # timers
     _t = {'im_detect' : Timer(), 'misc' : Timer()}
 
+    # imdb=get_testing_roidb(imdb)
+
     if not cfg.TEST.HAS_RPN:
         roidb = imdb.roidb
+
+    # width = imdb._get_widths()
 
     for i in xrange(num_images):
         # filter out any ground truth boxes
@@ -252,12 +288,40 @@ def test_net(net, imdb, max_per_image=400, thresh=-np.inf, vis=False):
             # that have the gt_classes field set to 0, which means there's no
             # ground truth.
             box_proposals = roidb[i]['boxes'][roidb[i]['gt_classes'] == 0]
-
         im = cv2.imread(imdb.image_path_at(i))
+        width = im.shape[1]
         _t['im_detect'].tic()
         scores, boxes = im_detect(net, im, box_proposals)
-        _t['im_detect'].toc()
+        if cfg.TEST.USE_FLIPPED:
+            flipped_im= cv2.flip(im,1)
 
+            flip_scores,flip_boxes=im_detect(net, flipped_im, box_proposals)
+
+            for k in xrange(flip_boxes.shape[1]/4):
+                # if True:
+                #     vis_detections(flipped_im, imdb.classes[k], flip_boxes[:,k*4:k*4+4])
+                # # raw_input()
+                oldx1 = flip_boxes[:, k*4].copy()
+                oldx2 = flip_boxes[:, k*4+2].copy()
+                assert (flip_boxes[:, k*4] >= 0).all()
+                assert (flip_boxes[:, k*4+2] >= flip_boxes[:, k*4]).all()
+                assert (width>= flip_boxes[:, k*4+2]).all()  
+                 
+                flip_boxes[:, k*4] = width - oldx2
+
+                flip_boxes[:,k*4+2] = width - oldx1 
+
+                assert(flip_boxes[:, k*4+2]>=0).all()
+                assert(flip_boxes[:,k*4]>=0).all()
+                assert (width>= flip_boxes[:, k*4+2]).all() 
+                # raw_input() 
+                # if True:
+                #     vis_detections(im, imdb.classes[k], flip_boxes[:,k*4:k*4+4])
+                # raw_input()
+                assert (flip_boxes[:, k*4+2] >= flip_boxes[:, k*4]).all() 
+            boxes = np.concatenate( (boxes, flip_boxes.copy()), axis = 0 )
+            scores = np.concatenate( (scores, flip_scores.copy()), axis = 0 )
+        _t['im_detect'].toc()
         _t['misc'].tic()
         # skip j = 0, because it's the background class
         for j in xrange(1, imdb.num_classes):
@@ -296,3 +360,4 @@ def test_net(net, imdb, max_per_image=400, thresh=-np.inf, vis=False):
 
     print 'Evaluating detections'
     imdb.evaluate_detections(all_boxes, output_dir)
+
